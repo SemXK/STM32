@@ -5,7 +5,8 @@
 ESP8266_ConnectionState ESP_ConnState = ESP8266_DISCONNECTED;   // Default state
 static char esp_rx_buffer[2048];
 static ESP8266_Status ESP_GetIP(char *ip_buffer, uint16_t buffer_len);
-static ESP8266_Status ESP_SendCommand(const char *cmd, const char *ack, uint32_t timeout);
+ESP8266_Status ESP_SendCommand(const char *cmd, const char *ack, uint32_t timeout);
+void ESP_SendHttpResponse(uint8_t connectionId);
 
 ESP8266_Status ESP_Init(void)
 {
@@ -13,14 +14,14 @@ ESP8266_Status ESP_Init(void)
 	USER_LOG("Initializing ESP8266...");
 	HAL_Delay(1000);
 
-//	res = ESP_SendCommand("AT+RST\r\n", "OK", 2000);
-//    if (res != ESP8266_OK){
-//    	DEBUG_LOG("Failed to Reset ESP8266...");
-//    	return res;
-//    }
-//
-//    USER_LOG("Waiting 5 Seconds for Reset to Complete...");
-//    HAL_Delay(5000);  // wait for reset to complete
+	res = ESP_SendCommand("AT+RST\r\n", "OK", 2000);
+    if (res != ESP8266_OK){
+    	DEBUG_LOG("Failed to Reset ESP8266...");
+   	return res;
+    }
+
+    USER_LOG("Waiting 5 Seconds for Reset to Complete...");
+    HAL_Delay(5000);  // wait for reset to complete
 
     res = ESP_SendCommand("AT\r\n", "OK", 2000);
     if (res != ESP8266_OK){
@@ -43,6 +44,7 @@ ESP8266_Status ESP_ConnectWiFi(const char *ssid, const char *password, char *ip_
     // Set in Station Mode
     char cmd[128];
     snprintf(cmd, sizeof(cmd), "AT+CWMODE=1\r\n");
+
 
     ESP8266_Status result = ESP_SendCommand(cmd, "OK", 2000); // wait up to 2s
     if (result != ESP8266_OK)
@@ -141,7 +143,7 @@ static ESP8266_Status ESP_GetIP(char *ip_buffer, uint16_t buffer_len)
     return ESP8266_ERROR;
 }
 
-static ESP8266_Status ESP_SendCommand(const char *cmd, const char *ack, uint32_t timeout)
+ESP8266_Status ESP_SendCommand(const char *cmd, const char *ack, uint32_t timeout)
 {
     uint8_t ch;
     uint16_t idx = 0;
@@ -195,4 +197,57 @@ static ESP8266_Status ESP_SendCommand(const char *cmd, const char *ack, uint32_t
 
     DEBUG_LOG("Timeout or no ACK. Buffer: %s", esp_rx_buffer);
     return ESP8266_TIMEOUT;
+}
+
+void ESP_SendHttpResponse(uint8_t connectionId)
+{
+    const char httpResponse[] =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+    	"Accept: application/json\r\n"
+        "Content-Length: 2\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "OK";
+
+    char cmd[40];
+
+    // Ask ESP8266 to prepare for sending the HTTP response
+    snprintf(cmd, sizeof(cmd),
+             "AT+CIPSEND=%u,%u\r\n",
+             connectionId,
+             (unsigned int)(sizeof(httpResponse) - 1));
+
+    HAL_UART_Transmit(&huart1, (uint8_t *)cmd,
+                      strlen(cmd), 1000);
+
+    // Wait for the ESP8266 '>' prompt
+    uint8_t byte;
+    uint32_t start = HAL_GetTick();
+    int promptFound = 0;
+
+    while (HAL_GetTick() - start < 2000)
+    {
+        if (HAL_UART_Receive(&huart1, &byte, 1, 10) == HAL_OK)
+        {
+            HAL_UART_Transmit(&huart2, &byte, 1, 1000);
+
+            if (byte == '>')
+            {
+                promptFound = 1;
+                break;
+            }
+        }
+    }
+
+    if (!promptFound)
+        return;
+
+    // Send the HTTP response
+    HAL_UART_Transmit(
+	  &huart1,
+	  (uint8_t *)httpResponse,
+	  sizeof(httpResponse) - 1,
+	  1000
+    );
 }
